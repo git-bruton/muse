@@ -1,0 +1,19 @@
+-   repo: git://github.com/pre-commit/pre-commit-hooks
+    sha: c2992bd3a11e3c0c2533ee370c26ac2b12d3a1b3
+    hooks:
+    -   id: autopep8-wrapper
+        args:
+        - --in-place
+        - --aggressive
+        - --aggressive
+        - --max-line-length=131
+    -   id: check-docstring-first
+    -   id: check-json
+    -   id: check-yaml
+    -   id: debug-statements
+    -   id: end-of-file-fixer
+    -   id: requirements-txt-fixer
+    -   id: flake8
+    -   id: name-tests-test
+        files: ^test*/.+\.py$
+    -   id: trailing-whitespace

@@ -1,0 +1,8 @@
+flake8
+jsonschema
+#keyring
+#pyxdg
+#mypy-lang
+pep8==1.5.7
+pre-commit
+pyflakes
