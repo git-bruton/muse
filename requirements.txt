@@ -6,3 +6,6 @@ jsonschema
 pep8==1.5.7
 pre-commit
 pyflakes
+#mmh3
+simplejson
+ipdb

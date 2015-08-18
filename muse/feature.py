@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import importlib
+import simplejson as json
 
-import mmh3  # TODO: re-evaluate if this is fast enough, Probably want non-cryptographic, awesome if we let them decide
+#import mmh3  # TODO: re-evaluate if this is fast enough, Probably want non-cryptographic, awesome if we let them decide
 SEED = 0  # TODO: allow them to set the seed
 
 
@@ -12,6 +13,18 @@ def get_nested(d, path):
             return None
         d = d[p]
     return d
+
+
+
+def load_class(full_class_string):
+    """
+    dynamically load a class from a string
+    """
+
+    module_path, class_name = full_class_string.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    # Finally, we retrieve the Class
+    return getattr(module, class_name)
 
 class FeatureDict(object):
     """
@@ -35,7 +48,7 @@ class FeatureDict(object):
         # How I wrap the thing with a partial
         # NOOOO: TOO many function to wrap with partial, Make instance level attribute???
         # seems like bad design
-        self.indices.setdefault(self._output_namespace, []).append(mmh3.hash(key, SEED))
+        self.indices.setdefault(self._output_namespace, []).append(hash(key, SEED))
         self.values.setdefault(self._output_namespace, []).append(value)
 
         # are namespaces defined in the config or the class
@@ -43,7 +56,7 @@ class FeatureDict(object):
         # this implies that they must be defined outside of stuff
 
     def add_string(self, key, value=1.0):
-        self.indices.setdefault(self._output_namespace, []).append(mmh3.hash('{0}^{1}'.format(key, value), SEED))
+        self.indices.setdefault(self._output_namespace, []).append(hash('{0}^{1}'.format(key, value), SEED))
         self.values.setdefault(self._output_namespace, []).append(1.0)
 
     def add_vector(self, key, values, namespace):
@@ -115,7 +128,7 @@ class FieldExtractor(FeatureFamilyExtractor):
         self._vector_fields = config.get('vector', [])
 
     @staticmethod
-    def validate_config(cls, config):
+    def validate_config(config):
         valid_keys = set(['string', 'integer', 'vector'])
         assert set(config.keys()).issubset(valid_keys)
         for fields in config.itervalues():
@@ -123,13 +136,13 @@ class FieldExtractor(FeatureFamilyExtractor):
 
     def get_features(self, data, feature_dict):
         for in_field, out_field in self._string_fields:
-            feature_dict.add_string(out_field, get_nested())
+            feature_dict.add_string(out_field, get_nested(data, in_field))
 
         for in_field, out_field in self._float_fields:
-            feature_dict.add_float(out_field, get_nested())
+            feature_dict.add_float(out_field, get_nested(data, in_field))
 
         for in_field, out_field in self._vector_fields:
-            feature_dict.add_vector(out_field, get_nested())
+            feature_dict.add_vector(out_field, get_nested(data, in_field))
 
 # STANDARDIZE ORDER OF CONFIG AND DATA
 
@@ -137,7 +150,7 @@ class Step(object):
 
     def __init__(self, step):
         self.step = step
-        cls = importlib.import_module(step['class'])
+        cls = load_class(step['class'])
         self._extractor = cls(step.get('configuration'))
         self._output_namespace = step.get('output_namespace')
 
@@ -152,7 +165,7 @@ class FeatureVectorExtractor(object):
         for line in lines:
             input_data = {
                 'shared': shared_data,
-                'example': line,
+                'instance': line,
             }
             feature_dict = FeatureDict()
             for step in self.__steps:
@@ -163,24 +176,28 @@ class FeatureVectorExtractor(object):
 
     @staticmethod
     def validate_config(cls, config):
-        raise NotImplemented()
-
-
+        valid_keys = set(['steps'])
+        assert set(config.keys()).issubset(valid_keys())
+        # ASSERT MORE HERE
 
 
 # TODO: figure this out later
 config = {
     'steps': [{
-        'name': 'rebounding',
-        'output_namespace': 'bball',
-        'class': 'basketball.features.rebounding.Rebound',
+        'output_namespace': 'bookmark',
+        'class': 'muse.feature.FieldExtractor',
         'configuration': {  # Make this a hashable dict
+            'string': [['instance.url', 'url']],
         },
-    }, {
-    }]
+    }],
 }
 
 
 
 if __name__ == '__main__':
-    print('hi')
+    data = []
+    with open('data/givealink_nov_2009/2009-11-01.json') as f:
+        for line in f:
+            data.append(json.loads(line))
+
+    extractor = FeatureVectorExtractor(config)
