@@ -9,3 +9,6 @@ pyflakes
 #mmh3
 simplejson
 ipdb
+hashlib
+scipy==0.16.0
+numpy==1.9.2

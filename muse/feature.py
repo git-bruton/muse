@@ -2,9 +2,14 @@
 # -*- coding: utf-8 -*-
 import importlib
 import simplejson as json
+import hashlib
+
+import sys
+from scipy.sparse import csr_matrix
 
 #import mmh3  # TODO: re-evaluate if this is fast enough, Probably want non-cryptographic, awesome if we let them decide
 SEED = 0  # TODO: allow them to set the seed
+
 
 
 def get_nested(d, path):
@@ -36,10 +41,10 @@ class FeatureDict(object):
     def __init__(self):
         self.indices = dict()  # Dict[str, list[int]]
         self.values = dict()  # Dict[str, list[float]]
-        self.__namespace = None
+        self._output_namespace = None
 
     def set_namespace(self, namespace):
-        self.__namespace = namespace
+        self._output_namespace = namespace
 
     # if we're already putting a partial here, why not also do the dicts
     # because we need all these functions to add data
@@ -48,15 +53,17 @@ class FeatureDict(object):
         # How I wrap the thing with a partial
         # NOOOO: TOO many function to wrap with partial, Make instance level attribute???
         # seems like bad design
-        self.indices.setdefault(self._output_namespace, []).append(hash(key, SEED))
-        self.values.setdefault(self._output_namespace, []).append(value)
+        index = int(hashlib.sha1('{0}^{1}'.format(key, value)).hexdigest(), 16)
+        self.indices.setdefault(self._output_namespace, []).append(index)
+        self.values.setdefault(self._output_namespace, []).append(float(value))
 
         # are namespaces defined in the config or the class
         # DECISION: they are defined in the config
         # this implies that they must be defined outside of stuff
 
     def add_string(self, key, value=1.0):
-        self.indices.setdefault(self._output_namespace, []).append(hash('{0}^{1}'.format(key, value), SEED))
+        index = int(hashlib.sha1(key).hexdigest(), 16)
+        self.indices.setdefault(self._output_namespace, []).append(index)
         self.values.setdefault(self._output_namespace, []).append(1.0)
 
     def add_vector(self, key, values, namespace):
@@ -73,6 +80,21 @@ class FeatureDict(object):
 #        self.values.setdefault(namespace, []).append(1.0)
         # what if define steps for vectors
         raise NotImplementedError('add_vector is not implemented')
+
+    def to_indices_data(self):
+        data, indices = [], []
+        for key in sorted(self.indices.keys()):
+            data.extend(self.indices[key])
+            indices.extend(self.values[key])
+        return indices, data
+        
+
+    def to_np_array(self):
+        data, indices = [], []
+        for key in sorted(self.indices.keys()):
+            data.extend(self.indices[key])
+            indices.extend(self.values[key])
+        return csr_matrix((data, indices, [0 ,len(indices)]), shape=(1, sys.maxint), dtype=float)
 
 
 class Transformer(object):
@@ -124,7 +146,7 @@ class FieldExtractor(FeatureFamilyExtractor):
     def __init__(self, config):
         self.validate_config(config)
         self._string_fields = config.get('string', [])
-        self._integer_fields = config.get('integer', [])
+        self._float_fields = config.get('float', [])
         self._vector_fields = config.get('vector', [])
 
     @staticmethod
@@ -134,7 +156,7 @@ class FieldExtractor(FeatureFamilyExtractor):
         for fields in config.itervalues():
             assert type(fields) is list
 
-    def get_features(self, data, feature_dict):
+    def extract(self, data, feature_dict):
         for in_field, out_field in self._string_fields:
             feature_dict.add_string(out_field, get_nested(data, in_field))
 
@@ -158,8 +180,8 @@ class Step(object):
 class FeatureVectorExtractor(object):
 
     def __init__(self, config):
-        self.__config = config
-        self.__steps = [Step(step) for step in config['steps']]
+        self._config = config
+        self._steps = [Step(step) for step in config['steps']]
 
     def get_features(self, lines, shared_data=None):
         for line in lines:
@@ -168,9 +190,10 @@ class FeatureVectorExtractor(object):
                 'instance': line,
             }
             feature_dict = FeatureDict()
-            for step in self.__steps:
+            for step in self._steps:
                 feature_dict.set_namespace(step._output_namespace)
-                step.extract(input_data, feature_dict)
+                step._extractor.extract(input_data, feature_dict)
+            print feature_dict.to_np_array().data
 
 
 
@@ -179,6 +202,9 @@ class FeatureVectorExtractor(object):
         valid_keys = set(['steps'])
         assert set(config.keys()).issubset(valid_keys())
         # ASSERT MORE HERE
+
+    def to_matrix(cls, feature_dicts):
+
 
 
 # TODO: figure this out later
@@ -195,9 +221,11 @@ config = {
 
 
 if __name__ == '__main__':
-    data = []
+    lines = []
     with open('data/givealink_nov_2009/2009-11-01.json') as f:
         for line in f:
-            data.append(json.loads(line))
+            lines.append(json.loads(line))
 
     extractor = FeatureVectorExtractor(config)
+    results = extractor.get_features(lines)
+    print results
