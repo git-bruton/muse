@@ -3,6 +3,7 @@
 import importlib
 import simplejson as json
 import hashlib
+import math
 
 from scipy.sparse import csr_matrix
 
@@ -12,12 +13,12 @@ SEED = 0  # TODO: allow them to set the seed
 MAX_COLS = 9223372036854775807
 
 
-def get_nested(d, path):
-    for p in path.split('.'):
-        if p not in d:
-            return None
-        d = d[p]
-    return d
+def get_nested(_dict, full_path, default=None):
+    for path in full_path.split('.'):
+        if path not in _dict:
+            return default
+        _dict = _dict[path]
+    return _dict
 
 class SetEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -68,8 +69,8 @@ class FeatureDict(object):
         # NOOOO: TOO many function to wrap with partial, Make instance level attribute???
         # seems like bad design
         if self._output_namespace not in self._float_values:
-            self.float_values[self._output_namespace] = dict()
-        self._values[self._output_namespace][key] = value
+            self._float_values[self._output_namespace] = dict()
+        self._float_values[self._output_namespace][key] = value
         #index = int(hashlib.sha1('{0}^{1}'.format(self._output_namespace, key)).hexdigest(), 16)
         #self.indices.setdefault(self._output_namespace, []).append(index)
         #self.values.setdefault(self._output_namespace, []).append(float(value))
@@ -77,6 +78,10 @@ class FeatureDict(object):
         # are namespaces defined in the config or the class
         # DECISION: they are defined in the config
         # this implies that they must be defined outside of stuff
+
+    def iter_float_namespace(self, namespace):
+        for key, value in self._float_values[namespace].iteritems():
+            yield key, value
 
     def add_strings(self, key, values):
         if self._output_namespace not in self._string_values:
@@ -143,15 +148,25 @@ class Transformer(object):
         raise NotImplementedError()
 
 
-class PolynomialTransformer(Transformer):
+class PolynomialFloatTransformer(Transformer):
     def __init__(self, config=None):
+        ## VALIDATE CONFIG
         if not config:
             self._powers = [0.5, 2.0]
+            self._input_namespace = None
+        else:
+            self._powers = config['powers']
+            self._input_namespace = config.get('input_namespace')
 
     def transform(self, feature_dict):
         # TODO: DO TRANFORMS WRITE TO THE SAME NAMESPACE
         # THEY SHOULD BE SPECIFIED IN THE CONFIG
-        pass
+        new_values = dict()
+        for key, value in feature_dict.iter_float_namespace(self._input_namespace):
+            for power in self._powers:
+                new_values['{0}^{1}'.format(key, power)] = math.pow(value, power)
+        for key, value in new_values.iteritems():
+            feature_dict.add_float(key, value)
 
 class FeatureFamilyExtractor(object):
     """
@@ -198,31 +213,40 @@ class FieldExtractor(FeatureFamilyExtractor):
 
     @staticmethod
     def validate_config(config):
-        valid_keys = set(['string', 'integer', 'vector'])
+        valid_keys = set(['string', 'float', 'vector'])
         assert set(config.keys()).issubset(valid_keys)
         for fields in config.itervalues():
             assert type(fields) is list
 
     def extract(self, data, feature_dict):
-        for in_field, out_field in self._string_fields:
-            feature_dict.add_strings(out_field, [get_nested(data, in_field)])
+        for in_field, out_field, default in self._string_fields:
+            feature_dict.add_strings(out_field, [get_nested(data, in_field, default)])
 
-        for in_field, out_field in self._float_fields:
-            feature_dict.add_float(out_field, get_nested(data, in_field))
+        for in_field, out_field, default in self._float_fields:
+            feature_dict.add_float(out_field, get_nested(data, in_field, default))
 
         #for in_field, out_field in self._vector_fields:
         #    feature_dict.add_vector(out_field, get_nested(data, in_field))
 
 # STANDARDIZE ORDER OF CONFIG AND DATA
 
+class StepTypes(object):
+    extractor = 'extractor'
+    transformer = 'transformer'
+
 class Step(object):
 
     def __init__(self, step):
         self.step = step
         cls = load_class(step['class'])
-        self._extractor = cls(step.get('configuration'))
+        self._actor = cls(step.get('configuration'))
         self._output_namespace = step.get('output_namespace')
-
+        if hasattr(self._actor, 'extract'):
+            self._type = StepTypes.extractor
+        elif hasattr(self._actor, 'transform'):
+            self._type = StepTypes.transformer
+        else:
+            raise ValueError('Wrong type: {0}'.format(type(self._actor)))
 
 
 
@@ -242,10 +266,17 @@ class FeatureVectorExtractor(object):
             fd = FeatureDict()
             feature_dicts.append(fd)
             for step in self._steps:
-                fd.set_namespace(step._output_namespace)
-                step._extractor.extract(input_data, fd)
-                fd.clear_namespace()
-        print feature_dicts
+                if step._type == StepTypes.extractor:
+                    fd.set_namespace(step._output_namespace)
+                    step._actor.extract(input_data, fd)
+                    fd.clear_namespace()
+                elif step._type == StepTypes.transformer:
+                    fd.set_namespace(step._output_namespace)
+                    step._actor.transform(fd)
+                    fd.clear_namespace()
+                else:
+                    raise ValueError('Wrong type')
+        print feature_dicts[0]
         return self.to_matrix(feature_dicts)
 
 
@@ -260,17 +291,17 @@ class FeatureVectorExtractor(object):
     def to_matrix(feature_dicts):
         indices = []
         data = []
-        indptr =[0] 
+        indptr = [0] 
         for fd in feature_dicts:
             _indices, _data = fd.to_indices_data()
             indices.extend(_indices)
             data.extend(_data)
             indptr.append(len(indices))
-        return  csr_matrix((data, indices, indptr), shape=(len(feature_dicts), MAX_COLS), dtype=float)
+        return csr_matrix((data, indices, indptr), shape=(len(feature_dicts), MAX_COLS), dtype=float)
 
 
 # TODO: figure this out later
-config = {
+config1 = {
     'steps': [{
         'output_namespace': 'bookmark',
         'class': 'muse.feature.FieldExtractor',
@@ -281,12 +312,37 @@ config = {
 }
 
 
+# RENAME SHARED TO CONTEXT LIKE AEROSOLVE
+config2 = {
+    'steps': [{
+        'output_namespace': 'user',
+        'class': 'muse.feature.FieldExtractor',
+        'configuration': {
+            'float': [
+                ['instance.average_stars', 'average_stars', 0.0],
+                ['instance.votes.cool', 'votes.cool', 0.0],
+                ['instance.votes.funny', 'votes.funny', 0.0],
+                ['instance.votes.useful', 'votes.useful', 0.0],
+            ],
+        },
+    }, {
+        'output_namespace': 'user',
+        'class': 'muse.feature.PolynomialFloatTransformer',
+        'configuration': {
+            'input_namespace': 'user',
+            'powers': [0.5, 2.0, 5.0],
+        },
+    }],
+}
+
 
 if __name__ == '__main__':
     lines = []
-    with open('data/givealink_nov_2009/2009-11-01.json') as f:
+    # path = 'data/givealink_nov_2009/2009-11-01.json'
+    path = 'data/users.json'
+    with open(path) as f:
         for line in f:
             lines.append(json.loads(line))
 
-    extractor = FeatureVectorExtractor(config)
+    extractor = FeatureVectorExtractor(config2)
     results = extractor.get_features(lines)
